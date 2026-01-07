@@ -5,15 +5,18 @@ from typing import Dict, List, Optional, Tuple
 import telebot
 import telebot.apihelper as apihelper
 import time
+from flask import Flask, request
 
 from telebot import types
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from dotenv import load_dotenv
 
-# Environment o'qish
+# =========== FLASK APP ===========
+app = Flask(__name__)
+
+# =========== ENVIRONMENT ===========
 load_dotenv()
 
-# Bot tokenini environmentdan olish
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8545746982:AAEBbOFfKCk3izlugis3_Svivb-QXZ6zLEU')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@GarajHub_uz')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '7903688837'))
@@ -21,7 +24,7 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '7903688837'))
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# SQLite3 import
+# =========== DATABASE ===========
 from db import (
     init_db,
     get_user, save_user, update_user_field,
@@ -36,7 +39,7 @@ from db import (
 # Database initialization
 init_db()
 
-# User state management
+# =========== USER STATES ===========
 user_states = {}
 
 def set_user_state(user_id: int, state: str):
@@ -49,13 +52,12 @@ def clear_user_state(user_id: int):
     if user_id in user_states:
         del user_states[user_id]
 
-# Orqaga tugmasini yaratish
+# =========== KEYBOARDS ===========
 def create_back_button():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton('🔙 Orqaga'))
     return markup
 
-# Asosiy menyu tugmalari
 def create_main_menu(user_id: int):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     buttons = [
@@ -71,6 +73,36 @@ def create_main_menu(user_id: int):
     
     return markup
 
+# =========== FLASK ROUTES ===========
+@app.route('/')
+def home():
+    return "✅ GarajHub Bot is running!"
+
+@app.route('/health')
+def health():
+    return "🟢 OK"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return 'Bad Request', 400
+
+# =========== POLLING FUNCTIONS ===========
+def start_polling():
+    """Polling ni backgroundda ishga tushirish"""
+    while True:
+        try:
+            logging.info("🔄 Polling started...")
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            logging.error(f"❌ Polling error: {e}")
+            time.sleep(5)
+
+# =========== BOT COMMANDS ===========
 # 1. START - KANALGA OBUNA TEKSHIRISH
 @bot.message_handler(commands=['start', 'help', 'boshlash'])
 def start_command(message):
@@ -299,7 +331,7 @@ def show_startups(message):
     show_startup_page(message.chat.id, 1)
 
 def show_startup_page(chat_id, page):
-    per_page = 1  # har sahifada 1 ta startup
+    per_page = 1
     startups, total = get_active_startups(page, per_page=per_page)
     
     if not startups:
@@ -336,7 +368,6 @@ def show_startup_page(chat_id, page):
     
     markup.add(InlineKeyboardButton('🔙 Orqaga', callback_data='back_to_main_menu'))
     
-    # Rasm bo'lsa rasm bilan, bo'lmasa oddiy xabar
     try:
         if startup.get('logo'):
             bot.send_photo(chat_id, startup['logo'], caption=text, reply_markup=markup)
@@ -371,10 +402,8 @@ def handle_join_startup(call):
             add_startup_member(startup_id, user_id)
             request_id = get_join_request_id(startup_id, user_id)
             
-            # Foydalanuvchiga xabar
             bot.answer_callback_query(call.id, "✅ So'rov yuborildi. Startup egasi tasdiqlasa, sizga xabar yuboriladi.", show_alert=True)
             
-            # Startup egasiga xabar yuborish
             startup = get_startup(startup_id)
             user = get_user(user_id)
             
@@ -407,7 +436,6 @@ def approve_join_request(call):
         request_id = int(call.data.split('_')[2])
         update_join_request(request_id, 'accepted')
         
-        # Foydalanuvchiga xabar yuborish
         from db import get_db_connection
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -519,7 +547,6 @@ def show_my_startups_page(chat_id, user_id, page):
     
     markup = InlineKeyboardMarkup(row_width=5)
     
-    # Sahifa raqamlari
     buttons = []
     start_page = max(1, page - 2)
     end_page = min(total_pages, start_page + 4)
@@ -530,13 +557,11 @@ def show_my_startups_page(chat_id, user_id, page):
     if buttons:
         markup.row(*buttons)
     
-    # Navigation
     if page > 1:
         markup.add(InlineKeyboardButton('⏮️ Oldingi', callback_data=f'my_startup_page_{page-1}'))
     if page < total_pages:
         markup.add(InlineKeyboardButton('⏭️ Keyingi', callback_data=f'my_startup_page_{page+1}'))
     
-    # Startup selection
     if page_startups:
         for i, startup in enumerate(page_startups):
             markup.add(InlineKeyboardButton(f'{start_idx + i + 1}. {startup["name"][:15]}...', 
@@ -569,7 +594,6 @@ def view_startup_details(call):
         user = get_user(startup['owner_id'])
         owner_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else "Noma'lum"
         
-        # A'zolar soni
         members, total_members = get_startup_members(startup_id, 1, 1)
         
         status_texts = {
@@ -642,7 +666,6 @@ def view_startup_members(call):
         members, total = get_startup_members(startup_id, page)
         total_pages = max(1, (total + 4) // 5)
         
-        # Avvalgi xabarni o'chirish
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
@@ -729,7 +752,6 @@ def process_startup_results(message, startup_id):
     
     if message.text == '🔙 Orqaga':
         clear_user_state(user_id)
-        # Go back to startup view
         startup = get_startup(startup_id)
         if startup:
             user = get_user(startup['owner_id'])
@@ -768,16 +790,12 @@ def process_startup_photo(message, startup_id, results_text):
     if message.photo:
         photo_id = message.photo[-1].file_id
         
-        # Update startup status and results
         update_startup_status(startup_id, 'completed')
         update_startup_results(startup_id, results_text)
         
-        # Get all members
         members = get_all_startup_members(startup_id)
-        
         startup = get_startup(startup_id)
         
-        # Send notification to all members
         end_date = datetime.now().strftime('%d-%m-%Y')
         success_count = 0
         
@@ -804,7 +822,6 @@ def process_startup_photo(message, startup_id, results_text):
         
         clear_user_state(user_id)
         
-        # Show updated startup details
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton('🔙 Orqaga', callback_data=f'view_startup_{startup_id}'))
         
@@ -915,7 +932,6 @@ def process_startup_group_link(message, data):
         show_main_menu(message)
         return
     
-    # Send to admin for approval
     startup = get_startup(startup_id)
     user = get_user(data['owner_id'])
     owner_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else "Noma'lum"
@@ -966,7 +982,6 @@ def admin_panel(message):
         KeyboardButton('🔙 Orqaga')
     )
     
-    # Welcome message with statistics
     stats = get_statistics()
     
     welcome_text = (
@@ -987,7 +1002,6 @@ def admin_dashboard(message):
     recent_users = get_recent_users(5)
     recent_startups = get_recent_startups(5)
     
-    # Dashboard text
     dashboard_text = (
         f"📊 <b>Dashboard</b>\n\n"
         f"📈 <b>Umumiy statistikalar:</b>\n"
@@ -998,14 +1012,12 @@ def admin_dashboard(message):
         f"└ ✅ Yakunlangan: <b>{stats['completed_startups']}</b>\n\n"
     )
     
-    # Recent users
     if recent_users:
         dashboard_text += f"👥 <b>So'nggi foydalanuvchilar:</b>\n"
         for i, user in enumerate(recent_users, 1):
             dashboard_text += f"{i}. {user.get('first_name', '')} {user.get('last_name', '')}\n"
         dashboard_text += "\n"
     
-    # Recent startups
     if recent_startups:
         dashboard_text += f"🚀 <b>So'nggi startaplar:</b>\n"
         for i, startup in enumerate(recent_startups, 1):
@@ -1073,7 +1085,6 @@ def show_pending_startups(call):
         
         markup = InlineKeyboardMarkup()
         
-        # Page navigation
         nav_buttons = []
         if page > 1:
             nav_buttons.append(InlineKeyboardButton('⏮️', callback_data=f'pending_startups_{page-1}'))
@@ -1086,7 +1097,6 @@ def show_pending_startups(call):
         if nav_buttons:
             markup.row(*nav_buttons)
         
-        # Startup selection
         for i, startup in enumerate(startups):
             markup.add(InlineKeyboardButton(f'{i+1}. {startup["name"][:20]}...', 
                                            callback_data=f'admin_view_startup_{startup["id"]}'))
@@ -1167,7 +1177,6 @@ def admin_approve_startup(call):
         startup_id = int(call.data.split('_')[2])
         update_startup_status(startup_id, 'active')
         
-        # Notify owner
         startup = get_startup(startup_id)
         if startup:
             try:
@@ -1179,7 +1188,6 @@ def admin_approve_startup(call):
             except:
                 pass
         
-        # Post to channel
         try:
             user = get_user(startup['owner_id'])
             owner_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else "Noma'lum"
@@ -1212,7 +1220,6 @@ def admin_approve_startup(call):
         
         bot.answer_callback_query(call.id, "✅ Startup tasdiqlandi!")
         
-        # Go back to pending startups
         show_pending_startups(call)
         
     except Exception as e:
@@ -1229,7 +1236,6 @@ def admin_reject_startup(call):
         startup_id = int(call.data.split('_')[2])
         update_startup_status(startup_id, 'rejected')
         
-        # Notify owner
         startup = get_startup(startup_id)
         if startup:
             try:
@@ -1248,7 +1254,6 @@ def admin_reject_startup(call):
         
         bot.answer_callback_query(call.id, "❌ Startup rad etildi!")
         
-        # Go back to pending startups
         show_pending_startups(call)
         
     except Exception as e:
@@ -1320,7 +1325,6 @@ def process_broadcast_message(message):
     
     for user_id in users:
         try:
-            # Check message type and send accordingly
             if message.photo:
                 bot.send_photo(user_id, message.photo[-1].file_id, caption=text if text else None)
             elif message.video:
@@ -1331,7 +1335,7 @@ def process_broadcast_message(message):
                 bot.send_message(user_id, f"📢 <b>Yangilik!</b>\n\n{text}")
             
             success += 1
-            time.sleep(0.05)  # To avoid flood limit
+            time.sleep(0.05)
         except Exception as e:
             fail += 1
     
@@ -1446,7 +1450,6 @@ def handle_back_button(message):
         startup_id = int(user_state.split('_')[2])
         clear_user_state(user_id)
         
-        # Go back to startup view
         startup = get_startup(startup_id)
         if startup:
             markup = InlineKeyboardMarkup()
@@ -1480,11 +1483,11 @@ def handle_other_messages(message):
     except Exception as e:
         logging.error(f"Unhandled message error: {e}")
 
-# Botni ishga tushirish
+# =========== MAIN ===========
 if __name__ == '__main__':
     init_db()
     print("=" * 60)
-    print("🚀 GarajHub Bot (SQLite3 versiyasi) ishga tushdi...")
+    print("🚀 GarajHub Bot (Web Service Version) ishga tushdi...")
     print(f"👨‍💼 Admin ID: {ADMIN_ID}")
     print(f"📢 Kanal: {CHANNEL_USERNAME}")
     try:
@@ -1494,27 +1497,11 @@ if __name__ == '__main__':
     print(f"🗄️ Database: SQLite3 (garajhub.db)")
     print("=" * 60)
     
-    while True:
-        try:
-            try:
-                bot.remove_webhook()
-            except:
-                pass
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except apihelper.ApiTelegramException as e:
-            if hasattr(e, 'result_json') and isinstance(e.result_json, dict) and e.result_json.get('error_code') == 409 or '409' in str(e):
-                logging.error(f"Telegram 409 conflict: {e}. Removing webhook and retrying...")
-                try:
-                    bot.remove_webhook()
-                except:
-                    pass
-                time.sleep(5)
-                continue
-            else:
-                logging.error(f"TeleBot ApiTelegramException: {e}")
-                time.sleep(5)
-                continue
-        except Exception as e:
-            logging.error(f"Botda xatolik: {e}")
-            time.sleep(5)
-            continue
+    # Polling ni backgroundda ishga tushirish
+    import threading
+    polling_thread = threading.Thread(target=start_polling, daemon=True)
+    polling_thread.start()
+    
+    # Flask serverni ishga tushirish
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
